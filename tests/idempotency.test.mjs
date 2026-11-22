@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {canonicalJson,hashValue,normalizeIdempotencyKey,evaluateReplay} from '../src/core/idempotency.ts';
+test('canonical payload hash ignores object key order',()=>assert.equal(hashValue(canonicalJson({b:2,a:1})),hashValue(canonicalJson({a:1,b:2}))));
+test('nested canonical ordering stable',()=>assert.equal(canonicalJson({x:{z:3,a:1}}),'{"x":{"a":1,"z":3}}'));
+test('hash produces lower-case sha256',()=>assert.match(hashValue('abc'),/^[a-f0-9]{64}$/));
+test('invalid idempotency key rejected',()=>assert.throws(()=>normalizeIdempotencyKey('x'),/INVALID_IDEMPOTENCY_KEY/));
+test('same key same payload replays',()=>assert.equal(evaluateReplay({payloadHash:'ab',status:'committed',resultRef:'1'},'ab'),'REPLAY'));
+test('same key different payload conflicts',()=>assert.equal(evaluateReplay({payloadHash:'ab',status:'committed',resultRef:'1'},'other'),'CONFLICT'));
+test('in-progress key does not double-apply',()=>assert.equal(evaluateReplay({payloadHash:'ab',status:'reserved',resultRef:null},'ab'),'RETRY_LATER'));

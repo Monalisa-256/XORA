@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {staffAccess,mayReadOwnAccount,mayDownloadFile,mayServeTestRoutes,canSelfRegister} from '../src/core/policy.ts';
+const eligible={accountStatus:'active',emailVerified:true,staffStatus:'active',mfaVerified:true,permissions:['staff.dashboard.read','staff.audit.read']};
+test('verified active adult-auth state permits only account read (not eligibility)',()=>assert.deepEqual(mayReadOwnAccount('active',true),{allow:true}));
+test('unverified account blocked',()=>assert.equal(mayReadOwnAccount('active',false).allow,false));
+test('restricted account blocked',()=>assert.equal(mayReadOwnAccount('restricted',true).allow,false));
+test('active staff with MFA and permission allowed',()=>assert.equal(staffAccess(eligible,'staff.dashboard.read').allow,true));
+test('nonstaff blocked',()=>assert.equal(staffAccess({...eligible,staffStatus:null},'staff.dashboard.read').allow,false));
+test('suspended staff blocked',()=>assert.equal(staffAccess({...eligible,staffStatus:'suspended'},'staff.dashboard.read').allow,false));
+test('revoked staff blocked',()=>assert.equal(staffAccess({...eligible,staffStatus:'revoked'},'staff.dashboard.read').allow,false));
+test('missing MFA blocked',()=>assert.equal(staffAccess({...eligible,mfaVerified:false},'staff.dashboard.read').allow,false));
+test('role without permission blocked',()=>assert.equal(staffAccess(eligible,'staff.finances.approve').allow,false));
+test('private profile media owner may download confirmed object',()=>assert.equal(mayDownloadFile({ownerId:'a',actorId:'a',state:'confirmed',purpose:'profile_photo',staffCaseAuthorized:false}).allow,true));
+test('other user cannot download',()=>assert.equal(mayDownloadFile({ownerId:'a',actorId:'b',state:'confirmed',purpose:'profile_photo',staffCaseAuthorized:false}).allow,false));
+test('unconfirmed object not available',()=>assert.equal(mayDownloadFile({ownerId:'a',actorId:'a',state:'pending',purpose:'profile_photo',staffCaseAuthorized:false}).allow,false));
+test('payment proof is never downloadable by generic owner path',()=>assert.equal(mayDownloadFile({ownerId:'a',actorId:'a',state:'confirmed',purpose:'payment_proof',staffCaseAuthorized:false}).allow,false));
+test('eligibility evidence needs case authorization',()=>assert.equal(mayDownloadFile({ownerId:'a',actorId:'b',state:'confirmed',purpose:'verification_evidence',staffCaseAuthorized:true,permission:'verification_evidence.read_case'}).allow,true));
+test('test routes never enabled in production',()=>assert.equal(mayServeTestRoutes({nodeEnv:'production',xoraEnvironment:'production',publicLaunch:false,testEndpoints:true}),false));
+test('test routes never enabled after public launch',()=>assert.equal(mayServeTestRoutes({nodeEnv:'development',xoraEnvironment:'development',publicLaunch:true,testEndpoints:true}),false));
+test('test routes allowed in development only after explicit opt-in',()=>assert.equal(mayServeTestRoutes({nodeEnv:'development',xoraEnvironment:'development',publicLaunch:false,testEndpoints:true}),true));
+test('registration is blocked until every gate approves',()=>assert.equal(canSelfRegister({authEnabled:true,signupEnabled:true,adultVerificationReady:false,legalReviewDone:true}),false));
+
+test('preview uses explicit staging environment to allow gated tests',()=>assert.equal(mayServeTestRoutes({nodeEnv:'production',vercelEnv:'preview',xoraEnvironment:'staging',publicLaunch:false,testEndpoints:true}),true));
+test('production deployment denies test endpoints even if mislabeled staging',()=>assert.equal(mayServeTestRoutes({nodeEnv:'production',vercelEnv:'production',xoraEnvironment:'staging',publicLaunch:false,testEndpoints:true}),false));

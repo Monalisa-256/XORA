@@ -1,0 +1,44 @@
+{
+  "repo_files": 141,
+  "duplicates_dropped": [
+    [
+      "docs/phase1/HANDOFF.md",
+      "XORA_PHASE1_HANDOFF.md",
+      "docs/phase1/README.md"
+    ],
+    [
+      "docs/phase2-implementation/PHASE2_LIVE_STAGING_AND_AUTH.md",
+      "XORA_PHASE2_IMPLEMENTATION/PHASE2_LIVE_STAGING_AND_AUTH.md",
+      "docs/engineering/LIVE_STAGING_AND_AUTH.md"
+    ],
+    [
+      "migrations/0003_staging_nonlogin.sql",
+      "XORA_PHASE2_IMPLEMENTATION/migrations/0003_staging_nonlogin.sql",
+      "XORA_APP/migrations/0003_staging_nonlogin.sql"
+    ]
+  ],
+  "ignored": [
+    "boundary-results.log",
+    "test-results-latest.tap",
+    "test-results-security.tap",
+    "test-results.tap",
+    "XORA_PHASE2_IMPLEMENTATION/.env.example"
+  ],
+  "top_level": [
+    ".env.example",
+    ".github",
+    ".gitignore",
+    ".npmrc",
+    "README.md",
+    "design",
+    "docs",
+    "migrations",
+    "next-env.d.ts",
+    "next.config.ts",
+    "package.json",
+    "scripts",
+    "src",
+    "tests",
+    "tsconfig.json"
+  ]
+}

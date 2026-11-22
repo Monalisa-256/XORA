@@ -1,0 +1,11 @@
+import Link from 'next/link';
+export const dynamic='force-dynamic';
+export default function Home(){return <main id="content"><div className="shell">
+ <header className="nav"><div className="brand"><span className="mark">✦</span>XORA<span className="tiny">18+</span></div><span className="nav-status"><span className="dot"/>Development preview</span></header>
+ <section className="hero"><span className="eyebrow">EXCLUSIVE CONNECTIONS · UGANDAN WEB APP</span><h1>Real connections.<br/><em>Your own pace.</em></h1>
+ <p>Meet like-minded adults, whether you are exploring a meaningful date or something more casual. Your intentions, privacy and consent come first.</p>
+ <div className="buttons"><Link className="btn primary" href="/staging">Explore the preview <span aria-hidden="true">↗</span></Link><span className="preview-note">Registration & payments are not yet open</span></div></section>
+ <section className="choices" aria-label="Ways to connect"><article><span className="feature-icon">♡</span><h2>XORA Date</h2><p>Thoughtful introductions with people interested in genuine romantic connections.</p><span className="tag">INTENTIONAL CONNECTIONS</span></article><article><span className="feature-icon">✧</span><h2>XORA Casual</h2><p>Meet adults open to relaxed, consensual connections—without misleading expectations.</p><span className="tag">CLEAR INTENTIONS</span></article><article><span className="feature-icon">✧♡</span><h2>Both, on your terms</h2><p>Change your intentions whenever you wish. Mutual interest matters in every mode.</p><span className="tag">ONE PRIVATE ACCOUNT</span></article></section>
+ <section className="promise"><div><span className="eyebrow">WHY XORA?</span><h2>Private by design.<br/>Safer by default.</h2></div><div className="promise-grid"><div><strong>Age-gated</strong><span>Adults only, with eligibility checks planned before launch</span></div><div><strong>Mutual</strong><span>Conversations begin with accepted invitations</span></div><div><strong>Transparent</strong><span>Clear renewable plans; no automatic charges</span></div><div><strong>In control</strong><span>Block, report and manage your visibility</span></div></div></section>
+ <footer><span>XORA · Concept & secure staging foundation</span><span>Nothing on this page offers paid sexual services.</span></footer>
+ </div></main>}

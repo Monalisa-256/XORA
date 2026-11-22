@@ -1,0 +1,48 @@
+digraph XORA {
+ graph [rankdir=TB, bgcolor="#F8F6F1", pad="0.35", nodesep="0.35", ranksep="0.72", splines=ortho, fontname="DejaVu Sans", label="XORA  |  Web App System Architecture", fontsize=26, fontcolor="#1B2334", labelloc=t];
+ node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=12, margin="0.20,0.15", color="#C2C6CC", fillcolor="white", fontcolor="#1B2334", penwidth=1.3];
+ edge [color="#687383", arrowsize=0.65, penwidth=1.5];
+
+ subgraph cluster_clients { label="01   PEOPLE & ENTRY"; fontsize=14; fontname="DejaVu Sans"; fontcolor="#5D6470"; color="#D9DDE4"; bgcolor="#EEF1F4"; style="rounded";
+ visitor [label="Visitors\nPublic pages"]; member [label="Verified adult members\nDate • Casual • Both"]; staff [label="Authorized staff\nAdmin + MFA"];
+ {rank=same; visitor; member; staff;}
+ }
+
+ subgraph cluster_web { label="02   RESPONSIVE WEB APPLICATION"; fontsize=14; fontname="DejaVu Sans"; fontcolor="#5D6470"; color="#D9DDE4"; bgcolor="#EEF1F4"; style="rounded";
+ cdn [label="HTTPS / CDN / access protection", fillcolor="#FFEFCE", color="#E8BB64"];
+ public [label="Public website\nHome • Pricing • Safety"]; portal [label="Member portal\nDiscover • Chat • Membership"]; admin [label="Admin dashboard\nFinance • Moderation • Support"];
+ {rank=same; public; portal; admin;}
+ }
+
+ subgraph cluster_backend { label="03   SINGLE MODULAR BACKEND"; fontsize=14; fontname="DejaVu Sans"; fontcolor="#5D6470"; color="#D9DDE4"; bgcolor="#E8EDF6"; style="rounded";
+ core [label="Authentication & server-side authorization", fillcolor="#22324A", fontcolor="white", color="#22324A"];
+ profiles [label="Accounts • Profiles\nAge & content review"]; matching [label="Discovery • Invitations\nMessaging • Blocks"]; payment [label="Manual orders • Finance\nReconciliation • Passes"]; promo [label="VIP / Spotlight\nEligible labeled placement"]; safety [label="Safety • Support\nNotifications • Audit"];
+ {rank=same; profiles; matching; payment; promo; safety;}
+ }
+
+ subgraph cluster_data { label="04   PRIVATE DATA & OPERATIONS"; fontsize=14; fontname="DejaVu Sans"; fontcolor="#5D6470"; color="#D9DDE4"; bgcolor="#EEF1F4"; style="rounded";
+ db [label="PostgreSQL\nSource of truth", fillcolor="#EAF4F0", color="#7DAA96"];
+ media [label="Private object storage\nPhotos • receipts • ID evidence", fillcolor="#EAF4F0", color="#7DAA96"];
+ jobs [label="Scheduled jobs\nExpiry • email • reminders", fillcolor="#EAF4F0", color="#7DAA96"];
+ backup [label="Encrypted backups\n+ restore tests", fillcolor="#EAF4F0", color="#7DAA96"];
+ {rank=same; db; media; jobs; backup;}
+ }
+
+ subgraph cluster_external { label="05   EXTERNAL MANUAL PAYMENT (NO GATEWAY)"; fontsize=14; fontname="DejaVu Sans"; fontcolor="#5D6470"; color="#D9DDE4"; bgcolor="#FFF6E6"; style="rounded";
+ momo [label="Approved MTN / Airtel\nbusiness receiving account", fillcolor="#FFE5B2", color="#D9A450"];
+ ledger [label="Official account history\nIndependent finance verification", fillcolor="#FFE5B2", color="#D9A450"];
+ benefit [label="Admin confirms settled funds\nTHEN one dated pass / promotion", fillcolor="#FFE5B2", color="#D9A450"];
+ {rank=same; momo; ledger; benefit;}
+ }
+
+ visitor -> cdn; member -> cdn; staff -> cdn;
+ cdn -> public; cdn -> portal; cdn -> admin;
+ public -> core; portal -> core; admin -> core;
+ core -> profiles; core -> matching; core -> payment; core -> promo; core -> safety;
+ profiles -> db; matching -> db; payment -> db; promo -> db; safety -> db;
+ profiles -> media; payment -> media; safety -> jobs; db -> backup;
+ member -> momo [style=dashed, color="#C18E40", constraint=false];
+ momo -> ledger [color="#C18E40"];
+ ledger -> benefit [color="#C18E40"];
+ benefit -> payment [style=dashed, color="#C18E40", constraint=false];
+}

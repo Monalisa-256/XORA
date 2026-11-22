@@ -1,0 +1,13 @@
+digraph Delivery {
+  graph [label="XORA Phase 2 · Evidence-Gated Delivery Path", labelloc=t, fontname="DejaVu Sans", fontsize=24, fontcolor="#21263C", bgcolor="#F8FAFD", pad=0.4, rankdir=LR, splines=ortho, nodesep=0.48, ranksep=0.58];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=13, margin="0.26,0.19", penwidth=1.2, color="#D3DCE7", fillcolor="#FFFFFF", fontcolor="#243047"];
+  edge [arrowsize=0.7, color="#65748B", penwidth=1.5];
+  A [label="GATES\nPhase 0 provider/legal\nPhase 1 UX approval", fillcolor="#FFF0D7", color="#EBD2A5"];
+  B [label="FOUNDATION\nrepo · pinned stack\nUI shells · database", fillcolor="#E7EDFE", color="#B6C9F3"];
+  C [label="SECURITY\nverified auth · staff MFA\nRBAC · private files", fillcolor="#FCE9E9", color="#F0B6BC"];
+  D [label="RELIABILITY\nidempotency · outbox\nworker · redacted logs", fillcolor="#E3F4EF", color="#AEDACC"];
+  E [label="CI & STAGING\nreview · migrate · test\nbackups · restore", fillcolor="#E8EBFD", color="#C4C8EF"];
+  F [label="P2 EXIT REVIEW\n52 acceptance tests\nfounder + security", fillcolor="#F9EED7", color="#E7CF9C"];
+  G [label="NEXT: PHASE 3\nadult eligibility & profiles\nonly after gates", fillcolor="#E5F2F0", color="#B4D9D1"];
+  A -> B -> C -> D -> E -> F -> G;
+}

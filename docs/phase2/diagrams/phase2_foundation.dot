@@ -1,0 +1,45 @@
+digraph XORA {
+  graph [label="XORA · PHASE 2 SECURE FOUNDATION", labelloc=t, labeljust=l, fontsize=24, fontname="DejaVu Sans", fontcolor="#21263C", rankdir=LR, pad=0.38, nodesep=0.34, ranksep=0.64, splines=polyline, bgcolor="#F8FAFD", compound=true];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=12, margin="0.23,0.16", color="#D9E1EC", fillcolor="#FFFFFF", fontcolor="#222A43", penwidth=1.2];
+  edge [color="#64748B", arrowsize=0.62, penwidth=1.3, fontsize=10, fontname="DejaVu Sans", fontcolor="#53617A"];
+
+  subgraph cluster_users { label="01  USERS & WEB EXPERIENCE"; style="rounded,filled"; color="#D8DEEB"; fillcolor="#F1F4FA"; fontcolor="#40516A";
+    Browser [label="Browser\npublic · member · admin\nresponsive shells", fillcolor="#EDE7FA", color="#D3C5EB"];
+    Admin [label="Staff (MFA)\nseparate grants", fillcolor="#FDF1D8", color="#EED59C"];
+  }
+  subgraph cluster_app { label="02  ONE NEXT.JS SERVER"; style="rounded,filled"; color="#D8DEEB"; fillcolor="#F5F6FB"; fontcolor="#40516A";
+    Server [label="Node / Next.js\nSSR + /api/v1", fillcolor="#E3EAFE", color="#B8CCF5"];
+    Guard [label="Security boundary\nsession · MFA · RBAC\nCSRF · validation · rate limits", fillcolor="#FFE6E8", color="#F1AFB8"];
+    Modules [label="Domain modules\naccount · audit · storage\nidempotency · jobs\nfuture modules DISABLED", fillcolor="#E5F5F0", color="#B7DCCF"];
+    Server -> Guard -> Modules;
+  }
+  subgraph cluster_data { label="03  PRIVATE DATA & MEDIA"; style="rounded,filled"; color="#D8DEEB"; fillcolor="#F1F4FA"; fontcolor="#40516A";
+    DB [label="PostgreSQL\naccounts · roles · audit\noutbox · idempotency", shape=cylinder, fillcolor="#E5F0FB", color="#B3D0E9"];
+    Storage [label="Private storage\nsynthetic uploads only\nscoped signed access", shape=folder, fillcolor="#E8F7E8", color="#B6DFC0"];
+    Backup [label="Encrypted backups\nrestore tested", fillcolor="#F0F0FC", color="#CFCCE7"];
+    DB -> Backup [label="backup / drill"];
+  }
+  subgraph cluster_ops { label="04  WORKER & OPERATIONS"; style="rounded,filled"; color="#D8DEEB"; fillcolor="#F5F6FB"; fontcolor="#40516A";
+    Worker [label="Scheduled worker\nlease · retries · dead letter", fillcolor="#FFF0E4", color="#F1CDAC"];
+    Email [label="Email sandbox\nfictional recipients", fillcolor="#FFFFFF", color="#D8DEEB"];
+    Ops [label="Redacted logs\nalerts · health", fillcolor="#FFFFFF", color="#D8DEEB"];
+    Worker -> Email [label="test only"];
+  }
+  subgraph cluster_delivery { label="05  SOFTWARE DELIVERY"; style="rounded,filled"; color="#D8DEEB"; fillcolor="#F1F4FA"; fontcolor="#40516A";
+    Git [label="Protected Git / CI\nreview · tests · scans", fillcolor="#EAE6FB", color="#CEC4F1"];
+    Stage [label="Access-gated staging\nseparate secrets / DB / media", fillcolor="#DFF4F1", color="#ACDCCD"];
+    Hold [label="Production placeholder\nNO live signup / payment", fillcolor="#FFE7E7", color="#F1B5B5"];
+    Git -> Stage [label="approve & deploy"];
+    Stage -> Hold [style=dashed, label="release gate", color="#B18E89"];
+  }
+  Browser -> Server [label="HTTPS"];
+  Admin -> Server [label="HTTPS + MFA"];
+  Modules -> DB [label="transactions"];
+  Modules -> Storage [label="private files"];
+  Modules -> Worker [style=invis];
+  DB -> Worker [label="leased jobs", constraint=false];
+  Server -> Ops [label="safe logs", constraint=false];
+  Worker -> Ops [label="job alerts", constraint=false];
+  Stage -> Server [style=dashed, label="deploy", constraint=false];
+  {rank=same; DB; Storage;}
+}
