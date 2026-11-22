@@ -1,26 +1,17 @@
+
 name: Extract, validate and refresh any ZIP
 
 on:
   push:
-    # Runs on any branch; publishing is restricted to the default branch.
     paths-ignore:
       - 'dist/normalized/**'
       - 'dist/reports/**'
   pull_request:
   workflow_dispatch:
     inputs:
-      archive:
-        description: 'Optional ZIP file path or directory; blank discovers any *.zip / *.ZIP'
-        required: false
-        type: string
-        default: ''
-      source_root:
-        description: 'Repository source folder: auto, . or XORA_APP'
-        required: false
-        type: string
-        default: auto
       commit_updated_zip:
-        description: 'Commit refreshed ZIPs to this repo (default branch only)'
+        description: 'Commit refreshed ZIPs to main after validation'
+        required: false
         type: boolean
         default: false
 
@@ -28,118 +19,460 @@ permissions:
   contents: read
 
 concurrency:
-  group: zip-guard-${{ github.ref }}
+  group: xora-zip-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-and-extract:
-    name: Validate archives and extracted repository
+  validate:
+    name: Extract ZIP first, then test and validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+
     steps:
-      - name: Checkout (read-only, no persisted credentials)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Test extractor and duplicate protection
-        run: python -m unittest discover -s tests -p test_zip_guard.py -v
-
-      - name: Extract arbitrary ZIP names and refresh from repo
-        shell: bash
-        env:
-          SELECTED_ARCHIVE: ${{ inputs.archive || '' }}
-          SOURCE_ROOT: ${{ inputs.source_root || 'auto' }}
-        run: |
-          set -euo pipefail
-          args=(--repo . --output-dir dist/normalized --report-dir dist/reports --extract-dir dist/extracted --source-root "$SOURCE_ROOT")
-          if [[ -n "$SELECTED_ARCHIVE" ]]; then
-            args+=(--archive "$SELECTED_ARCHIVE")
-          fi
-          python tools/zip_guard.py "${args[@]}"
-
-      - name: Validate output ZIP contents, manifests and project structure
-        run: python tools/verify_repo.py --archive-dir dist/normalized --report dist/reports/repository-validation.json
-
-      - name: Print output checksums
+      - name: Extract every file from ZIP, including scripts and tests
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum dist/normalized/*.validated.zip
           python - <<'PY'
-          import json
           from pathlib import Path
-          r=json.loads(Path('dist/reports/repository-validation.json').read_text())
-          assert r['passed'], 'ZIP validation did not pass'
-          print('All ZIPs passed extracted repository validation')
+          from zipfile import ZipFile, is_zipfile
+          from io import BytesIO
+          import stat
+
+          root = Path.cwd().resolve()
+
+          excluded = {
+              '.git', '.next', 'node_modules',
+              'dist', '__MACOSX', '__pycache__'
+          }
+
+          project_dirs = {
+              'src', 'app', 'pages', 'docs', 'design',
+              'tests', 'scripts', 'tools', 'public',
+              'assets', 'migrations', '.github',
+              'packages', 'apps'
+          }
+
+          max_file = 64 * 1024 * 1024
+          max_total = 512 * 1024 * 1024
+
+          total = 0
+          extracted = {}
+
+          archives = sorted(
+              p for p in root.rglob('*')
+              if p.is_file()
+              and p.suffix.lower() == '.zip'
+              and not any(
+                  x in excluded
+                  for x in p.relative_to(root).parts
+              )
+          )
+
+          if not archives:
+              raise SystemExit(
+                  'ERROR: No ZIP file found in repository'
+              )
+
+          print(
+              'Found ZIP archives:',
+              ', '.join(
+                  str(p.relative_to(root))
+                  for p in archives
+              )
+          )
+
+          def normalize(name):
+              if (
+                  not name
+                  or name.startswith('/')
+                  or '\\' in name
+                  or '\x00' in name
+              ):
+                  raise ValueError(
+                      f'Unsafe ZIP member: {name!r}'
+                  )
+
+              parts = name.rstrip('/').split('/')
+
+              if (
+                  any(
+                      part in ('', '.', '..')
+                      for part in parts
+                  )
+                  or ':' in parts[0]
+              ):
+                  raise ValueError(
+                      f'Unsafe ZIP path: {name!r}'
+                  )
+
+              if any(
+                  part in excluded
+                  for part in parts
+              ):
+                  return None
+
+              return '/'.join(parts)
+
+          def unpack(data, label, depth=0):
+              global total
+
+              if depth > 3:
+                  raise ValueError(
+                      f'Too many nested ZIPs: {label}'
+                  )
+
+              if not is_zipfile(BytesIO(data)):
+                  raise ValueError(
+                      f'Invalid ZIP: {label}'
+                  )
+
+              with ZipFile(BytesIO(data)) as z:
+                  entries = [
+                      i for i in z.infolist()
+                      if not i.is_dir()
+                  ]
+
+                  paths = [
+                      normalize(i.filename)
+                      for i in entries
+                  ]
+
+                  parts = [
+                      p.split('/')
+                      for p in paths
+                      if p
+                  ]
+
+                  # Remove unnecessary outer folders.
+                  # Preserve src/, tests/, scripts/, etc.
+                  while (
+                      parts
+                      and all(
+                          len(p) > 1
+                          and p[0] == parts[0][0]
+                          for p in parts
+                      )
+                      and parts[0][0] not in project_dirs
+                  ):
+                      paths = [
+                          p.split('/', 1)[1]
+                          if p else None
+                          for p in paths
+                      ]
+
+                      parts = [
+                          p.split('/')
+                          for p in paths
+                          if p
+                      ]
+
+                  for info, path in zip(entries, paths):
+                      if (
+                          path is None
+                          or path == 'ZIP_GUARD_MANIFEST.json'
+                      ):
+                          continue
+
+                      mode = info.external_attr >> 16
+
+                      if stat.S_IFMT(mode) not in (
+                          0,
+                          stat.S_IFREG,
+                          stat.S_IFDIR
+                      ):
+                          raise ValueError(
+                              f'Unsafe file type: {path}'
+                          )
+
+                      if (
+                          info.file_size > max_file
+                          or (
+                              info.file_size > 1_000_000
+                              and info.file_size >
+                              300 * max(info.compress_size, 1)
+                          )
+                      ):
+                          raise ValueError(
+                              f'Unsafe ZIP size: {path}'
+                          )
+
+                      total += info.file_size
+
+                      if total > max_total:
+                          raise ValueError(
+                              'ZIP exceeds 512 MiB expanded limit'
+                          )
+
+                      payload = z.read(info)
+
+                      # Expand ZIPs inside ZIPs.
+                      if path.lower().endswith('.zip'):
+                          unpack(
+                              payload,
+                              f'{label}/{path}',
+                              depth + 1
+                          )
+                          continue
+
+                      key = path.casefold()
+
+                      if key in extracted:
+                          old_path, old_data = extracted[key]
+
+                          if (
+                              old_path != path
+                              or old_data != payload
+                          ):
+                              raise ValueError(
+                                  f'Conflicting duplicate: {path}'
+                              )
+
+                          continue
+
+                      extracted[key] = (path, payload)
+
+          for archive in archives:
+              unpack(
+                  archive.read_bytes(),
+                  str(archive.relative_to(root))
+              )
+
+          if not extracted:
+              raise SystemExit(
+                  'ERROR: No usable files extracted'
+              )
+
+          written = 0
+          retained = 0
+
+          for path, data in sorted(extracted.values()):
+              destination = root / path
+
+              if not destination.resolve().is_relative_to(root):
+                  raise ValueError(
+                      f'Path escape rejected: {path}'
+                  )
+
+              if destination.is_symlink():
+                  raise ValueError(
+                      f'Symlink rejected: {path}'
+                  )
+
+              if destination.exists():
+                  if not destination.is_file():
+                      raise ValueError(
+                          f'File/directory conflict: {path}'
+                      )
+
+                  # Keep existing repository version.
+                  # This preserves the updated workflow.
+                  retained += 1
+                  continue
+
+              destination.parent.mkdir(
+                  parents=True,
+                  exist_ok=True
+              )
+
+              destination.write_bytes(data)
+              written += 1
+
+          print(
+              f'Extracted {written} new files. '
+              f'Kept {retained} existing files.'
+          )
+
+          required = (
+              'scripts/zip_guard.py',
+              'scripts/verify_repo.py',
+              'tests/test_zip_guard.py',
+              'package.json'
+          )
+
+          for path in required:
+              if not (root / path).is_file():
+                  raise SystemExit(
+                      f'ERROR: Missing after extraction: {path}'
+                  )
+
+          print(
+              'PASS: Extractor, validator, '
+              'tests and application files are present.'
+          )
           PY
 
-      - name: Upload normalized ZIPs and validation reports
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Run Python extractor and validator tests
+        run: |
+          python -m unittest discover \
+            -s tests \
+            -p 'test_zip_guard.py' \
+            -v
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
         with:
-          name: zip-guard-${{ github.run_number }}
+          node-version: '22'
+
+      - name: Run application tests and security checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --experimental-strip-types \
+            --test \
+            --test-concurrency=1 \
+            tests/*.test.mjs
+
+          node scripts/check-boundaries.mjs
+
+      - name: Rebuild updated ZIP without nesting or duplicates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python scripts/zip_guard.py \
+            --repo . \
+            --source-root . \
+            --strict-repo-sync \
+            --require-archive \
+            --output-dir dist/normalized \
+            --report-dir dist/reports
+
+      - name: Validate rebuilt ZIP and SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python scripts/verify_repo.py \
+            --archive-dir dist/normalized \
+            --report dist/reports/repository-validation.json \
+            --require-root-layout \
+            --no-duplicate-content
+
+          sha256sum dist/normalized/*.validated.zip
+
+      - name: Upload updated ZIP and validation reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: xora-validated-${{ github.run_number }}
           path: |
-            dist/normalized/*.validated.zip
-            dist/reports/*.json
+            dist/normalized/
+            dist/reports/
           if-no-files-found: error
           retention-days: 14
 
-  commit-refreshed-zips:
-    name: Update ZIPs in repo on default branch
-    needs: validate-and-extract
-    # PRs never write, manual runs only write with explicit opt-in.
+  commit-validated-zips:
+    name: Save extracted source and updated ZIP to GitHub
+    needs: validate
+
     if: >-
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.commit_updated_zip)) &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+
     permissions:
       contents: write
+
     steps:
-      - name: Checkout default branch for targeted ZIP refresh
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download validated ZIP artifact
+        uses: actions/download-artifact@v4
         with:
-          persist-credentials: true
+          name: xora-validated-${{ github.run_number }}
+          path: dist/
 
-      - name: Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-
-      - name: Regenerate only managed ZIP and report outputs
-        shell: bash
-        env:
-          SELECTED_ARCHIVE: ${{ inputs.archive || '' }}
-          SOURCE_ROOT: ${{ inputs.source_root || 'auto' }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist/normalized dist/reports
-          # Remove stale *generated* filenames when a source ZIP was renamed/deleted.
-          find dist/normalized -maxdepth 1 -type f -name '*.validated.zip' -delete
-          find dist/reports -maxdepth 1 -type f \( -name '*.report.json' -o -name 'summary.json' -o -name 'repository-validation.json' \) -delete
-          args=(--repo . --output-dir dist/normalized --report-dir dist/reports --source-root "$SOURCE_ROOT")
-          if [[ -n "$SELECTED_ARCHIVE" ]]; then
-            args+=(--archive "$SELECTED_ARCHIVE")
-          fi
-          python tools/zip_guard.py "${args[@]}"
-          python tools/verify_repo.py --archive-dir dist/normalized --report dist/reports/repository-validation.json
-
-      - name: Commit fresh ZIPs only when source content changed
+      - name: Commit extracted repository and refreshed ZIP
         shell: bash
         run: |
           set -euo pipefail
-          git add -A -- dist/normalized dist/reports
+
+          python - <<'PY_EXTRACT'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          root = Path.cwd().resolve()
+
+          archives = sorted(
+              Path('dist/normalized').glob('*.validated.zip')
+          )
+
+          if not archives:
+              raise SystemExit(
+                  'No validated ZIP files downloaded'
+              )
+
+          count = 0
+
+          for archive in archives:
+              with ZipFile(archive) as z:
+                  for name in z.namelist():
+
+                      if (
+                          name == 'ZIP_GUARD_MANIFEST.json'
+                          or name.startswith('.github/workflows/')
+                      ):
+                          continue
+
+                      destination = root / name
+
+                      if (
+                          not destination.resolve().is_relative_to(root)
+                          or destination.is_symlink()
+                      ):
+                          raise SystemExit(
+                              f'Unsafe file: {name}'
+                          )
+
+                      payload = z.read(name)
+
+                      if destination.exists():
+                          if destination.read_bytes() != payload:
+                              raise SystemExit(
+                                  f'Conflicting repository file: {name}'
+                              )
+                          continue
+
+                      destination.parent.mkdir(
+                          parents=True,
+                          exist_ok=True
+                      )
+
+                      destination.write_bytes(payload)
+                      count += 1
+
+          print(
+              f'Prepared {count} new repository files'
+          )
+          PY_EXTRACT
+
+          git add -A -- .
+
           if git diff --cached --quiet; then
-            echo 'Already current: no ZIP changes to commit.'
+            echo 'Repository and ZIP already up to date.'
             exit 0
           fi
+
           git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'chore: refresh validated ZIPs [skip ci]'
-          # Never force push; branch protection or concurrent changes may block it.
-          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git commit -m \
+            'chore: extract XORA repository and refresh ZIPs [skip ci]'
+
+          git push origin \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
+            
