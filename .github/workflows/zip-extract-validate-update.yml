@@ -1,369 +1,176 @@
-name: XORA - extract every ZIP, validate, and commit source
-
+name: XORA production source validation and ZIP import
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: xora-zip-import-${{ github.ref }}
+  group: xora-production-import-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   validate:
-    name: Extract source, test, and build (read-only)
+    name: Validate source, tests, types and production build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      has_archives: ${{ steps.import.outputs.has_archives }}
+      has_archives: ${{ steps.prepare.outputs.has_archives }}
+      manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
     steps:
-      - name: Checkout full repository history
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
-
-      - name: Bootstrap safe ZIP importer (supports any ZIP filename)
+      - name: Bootstrap trusted importer (independent of uploaded ZIP)
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p scripts tests .xora-import/tooling/scripts .xora-import/tooling/tests
-          cat > scripts/import_repo_zips.py <<'PY_IMPORT'
-          #!/usr/bin/env python3
-          """Safely import arbitrarily named tracked ZIP archives into a checked-out repository.
-
-          Designed for GitHub Actions: prepare and checksum files in a staging directory, then
-          allow an isolated commit job to apply *only* that tested manifest and remove archives.
-          No secrets, git credentials, or untrusted archive code are executed by this script.
-          """
-          from __future__ import annotations
-
-          import argparse
-          import hashlib
-          import io
-          import json
-          import os
-          import re
-          import stat
-          import subprocess
-          import sys
-          import zipfile
+          python - <<'PY_BOOTSTRAP'
+          import base64, lzma, hashlib, os
           from pathlib import Path
-          from collections import defaultdict
-
-          MAX_MEMBER_BYTES = 64 * 1024 * 1024
-          MAX_TOTAL_BYTES = 512 * 1024 * 1024
-          MAX_MEMBERS = 18000
-          MAX_DEPTH = 4
-          BUILD_DIRS = {'.git', '.next', '.turbo', 'node_modules', 'dist', 'coverage', '__MACOSX', '__pycache__', '.venv', 'venv', '.xora-import'}
-          REPO_DIRS = {'.github', 'src', 'app', 'pages', 'public', 'assets', 'docs', 'design', 'tests', 'scripts', 'tools', 'migrations', 'packages', 'apps', 'components', 'lib', 'config', 'styles', 'prisma'}
-          RESTRICTED_NAMES = {'.env', '.env.local', '.env.production', '.env.development', '.env.staging', 'id_rsa', 'id_ed25519', 'secrets.json', 'credentials.json', 'service-account.json', 'service_account.json'}
-          RESTRICTED_EXT = ('.pem', '.p12', '.pfx', '.key', '.keystore', '.jks')
-          PROTECTED_WORKFLOW = '.github/workflows/zip-extract-validate-update.yml'
-
-          class ImportErrorSafe(Exception):
-              pass
-
-          def sha256(data: bytes) -> str:
-              return hashlib.sha256(data).hexdigest()
-
-          def pathcheck(raw: str) -> str:
-              if (not isinstance(raw, str) or not raw or '\\' in raw or '\x00' in raw or raw.startswith(('/', '~')) or re.match(r'^[a-zA-Z]:', raw)):
-                  raise ImportErrorSafe(f'Invalid ZIP entry: {raw!r}')
-              if len(raw) > 650 or any(ord(c) < 32 or ord(c) == 127 for c in raw):
-                  raise ImportErrorSafe(f'Invalid ZIP filename: {raw!r}')
-              parts = raw.rstrip('/').split('/')
-              if len(parts) > 24 or any(x in ('', '.', '..') for x in parts):
-                  raise ImportErrorSafe(f'Unsafe ZIP entry: {raw!r}')
-              if any(x in BUILD_DIRS for x in parts):
-                  return ''
-              if parts[-1].lower() in RESTRICTED_NAMES or (parts[-1].lower().startswith('.env.') and not parts[-1].lower().endswith('.example')) or parts[-1].lower().endswith(RESTRICTED_EXT):
-                  raise ImportErrorSafe(f'Secret/credential file in ZIP is not permitted: {raw}')
-              return '/'.join(parts)
-
-          def strip_wrapper(entries: list[tuple[str, bytes, int]]) -> list[tuple[str, bytes, int]]:
-              while entries:
-                  names = [e[0] for e in entries]
-                  if any('/' not in name for name in names):
-                      break
-                  head = {name.split('/', 1)[0] for name in names}
-                  if len(head) != 1:
-                      break
-                  folder = head.pop()
-                  if folder in REPO_DIRS or folder.startswith('.'):
-                      break
-                  entries = [(name.split('/', 1)[1], contents, mode) for name, contents, mode in entries]
-              return entries
-
-          class ArchiveReader:
-              def __init__(self):
-                  self.total = 0
-                  self.entries = 0
-                  self.nested = 0
-                  self.duplicates = 0
-
-              def read(self, raw: bytes, label: str, depth: int = 0) -> dict[str, tuple[bytes, int]]:
-                  if depth > MAX_DEPTH:
-                      raise ImportErrorSafe(f'Excessive ZIP nesting: {label}')
-                  try:
-                      z = zipfile.ZipFile(io.BytesIO(raw))
-                  except (zipfile.BadZipFile, OSError, ValueError) as e:
-                      raise ImportErrorSafe(f'Unreadable archive {label}: {e}') from e
-                  collected: dict[str, tuple[bytes, int]] = {}
-                  cases: dict[str, str] = {}
-                  with z:
-                      local = []
-                      for member in z.infolist():
-                          self.entries += 1
-                          if self.entries > MAX_MEMBERS:
-                              raise ImportErrorSafe('Too many ZIP members')
-                          if member.is_dir():
-                              pathcheck(member.filename)
-                              continue
-                          path = pathcheck(member.filename)
-                          if not path:
-                              continue
-                          mode = member.external_attr >> 16
-                          if stat.S_IFMT(mode) not in (0, stat.S_IFREG):
-                              raise ImportErrorSafe(f'Symlink or special file rejected: {label}:{path}')
-                          if member.flag_bits & 1:
-                              raise ImportErrorSafe(f'Encrypted ZIP entry rejected: {label}:{path}')
-                          if member.file_size > MAX_MEMBER_BYTES:
-                              raise ImportErrorSafe(f'ZIP entry too large: {label}:{path}')
-                          if member.file_size > 1_000_000 and member.file_size > 300 * max(1, member.compress_size):
-                              raise ImportErrorSafe(f'Possible ZIP bomb: {label}:{path}')
-                          self.total += member.file_size
-                          if self.total > MAX_TOTAL_BYTES:
-                              raise ImportErrorSafe('Expanded archive budget exceeded')
-                          with z.open(member) as f:
-                              contents = f.read(MAX_MEMBER_BYTES + 1)
-                              if len(contents) > MAX_MEMBER_BYTES or f.read(1):
-                                  raise ImportErrorSafe(f'ZIP stream too large: {label}:{path}')
-                          local.append((path, contents, mode))
-                      for path, content, mode in strip_wrapper(local):
-                          path = pathcheck(path)
-                          if path.lower().endswith('.zip'):
-                              self.nested += 1
-                              nested = self.read(content, f'{label}!/{path}', depth + 1)
-                              for name, item in nested.items():
-                                  self._add(collected, cases, name, item, label)
-                          elif path != 'ZIP_GUARD_MANIFEST.json':
-                              self._add(collected, cases, path, (content, mode), label)
-                  return collected
-
-              def _add(self, result, cases, path, item, label):
-                  key = path.casefold()
-                  if key in cases and cases[key] != path:
-                      raise ImportErrorSafe(f'Case-conflicting filenames: {cases[key]} vs {path}')
-                  cases[key] = path
-                  if path in result:
-                      if result[path][0] != item[0]:
-                          raise ImportErrorSafe(f'Conflicting duplicate inside ZIP {label}: {path}')
-                      self.duplicates += 1
-                  else:
-                      result[path] = item
-
-          def git_tracked_zip_paths(root: Path) -> list[Path]:
-              raw = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z'])
-              paths = []
-              for name in raw.split(b'\0'):
-                  if not name:
-                      continue
-                  relative = os.fsdecode(name)
-                  if relative.lower().endswith('.zip') and not any(x in BUILD_DIRS for x in Path(relative).parts):
-                      source = root / relative
-                      if not source.is_file() or source.is_symlink():
-                          raise ImportErrorSafe(f'Unusable tracked ZIP path: {relative}')
-                      paths.append(source)
-              def git_order(p: Path):
-                  relative = p.relative_to(root).as_posix()
-                  result = subprocess.run(['git', '-C', str(root), 'log', '-1', '--format=%H', '--', relative], capture_output=True, text=True, check=True)
-                  commit = result.stdout.strip()
-                  depth = subprocess.check_output(['git', '-C', str(root), 'rev-list', '--count', commit], text=True).strip() if commit else '0'
-                  return (int(depth), relative)
-              return sorted(paths, key=git_order)
-
-          def safe_destination(root: Path, relative: str) -> Path:
-              clean = pathcheck(relative)
-              if not clean:
-                  raise ImportErrorSafe(f'Excluded output path: {relative}')
-              dest = root
-              for part in clean.split('/'):
-                  dest = dest / part
-                  if dest.is_symlink():
-                      raise ImportErrorSafe(f'Symlink destination rejected: {dest}')
-              if not dest.resolve().is_relative_to(root.resolve()):
-                  raise ImportErrorSafe(f'Archive would escape checkout: {relative}')
-              return dest
-
-          def prepare(root: Path, stage: Path, *, archive_paths=None) -> dict:
-              root = root.resolve()
-              archives = archive_paths if archive_paths is not None else git_tracked_zip_paths(root)
-              stage = stage.resolve()
-              if not stage.is_relative_to(root) or stage == root:
-                  raise ImportErrorSafe('Invalid staging location')
-              stage.mkdir(parents=True, exist_ok=True)
-              collector = ArchiveReader()
-              chosen: dict[str, tuple[bytes, int, str]] = {}
-              canonical: dict[str, str] = {}
-              overrides, repeated = [], 0
-              relocated_notes = []
-              for archive in archives:
-                  name = archive.relative_to(root).as_posix()
-                  items = collector.read(archive.read_bytes(), name)
-                  # A change-only ZIP may carry its own README as packaging instructions.
-                  # Preserve the app's root README and retain that note under docs/.
-                  if 'package.json' not in items and 'README.md' in items and (root / 'README.md').is_file():
-                      data, mode = items.pop('README.md')
-                      note_stem = re.sub(r'[^A-Za-z0-9._-]+', '-', archive.stem).strip('.-') or 'archive'
-                      note_path = f'docs/zip-import-notes/{note_stem}.md'
-                      items[note_path] = (data, mode)
-                      relocated_notes.append({'original':f'{name}:README.md','destination':note_path})
-                  for path, (data, mode) in items.items():
-                      key = path.casefold()
-                      if key in canonical and canonical[key] != path:
-                          raise ImportErrorSafe(f'Conflicting casing across archives: {canonical[key]} vs {path}')
-                      canonical[key] = path
-                      if path in chosen:
-                          prev = chosen[path]
-                          if prev[0] == data:
-                              repeated += 1
-                          else:
-                              overrides.append({'path':path, 'older_archive':prev[2], 'newer_archive':name})
-                      chosen[path] = (data, mode, name)
-              # Do not replace the workflow currently running with an old workflow packed in a ZIP.
-              protected = []
-              for path in list(chosen):
-                  if path == PROTECTED_WORKFLOW and (root / path).exists():
-                      protected.append(path)
-                      del chosen[path]
-              # Detect duplicated identical payloads at different paths (do not silently remove
-              # path aliases that might be required imports).
-              fingerprints: dict[str, str] = {}
-              same_content = []
-              for path, (data, _mode, _origin) in sorted(chosen.items()):
-                  digest = sha256(data)
-                  if digest in fingerprints:
-                      same_content.append((fingerprints[digest], path))
-                  else:
-                      fingerprints[digest] = path
-              if same_content:
-                  raise ImportErrorSafe('Repeated identical file contents at distinct paths; review before deleting required paths: ' + str(same_content[:8]))
-              # Check all destinations before touching the worktree.
-              for path in chosen:
-                  safe_destination(root, path)
-                  safe_destination(stage / 'files', path)
-              files = []
-              for path, (data, mode, source) in sorted(chosen.items()):
-                  dest = stage / 'files' / path
-                  dest.parent.mkdir(parents=True, exist_ok=True)
-                  dest.write_bytes(data)
-                  dest.chmod(0o755 if mode & 0o111 else 0o644)
-                  files.append({'path':path, 'sha256':sha256(data), 'size':len(data), 'source':source, 'mode':0o755 if mode & 0o111 else 0o644})
-              report = {'format':'xora-repository-zip-import-v2','archives':[p.relative_to(root).as_posix() for p in archives],
-                        'file_count':len(files), 'files':files, 'nested_archives_expanded':collector.nested,
-                        'duplicates_discarded':collector.duplicates+repeated,
-                        'older_archive_conflicts_resolved':overrides,
-                        'protected_workflows_preserved':protected,
-                        'relocated_patch_readmes':relocated_notes,
-                        'archive_order':'git last-edit time ascending; latest ZIP wins for conflicting paths'}
-              (stage / 'manifest.json').write_text(json.dumps(report, indent=2, sort_keys=True)+'\n', encoding='utf-8')
-              # Copy into validation worktree, but never delete archives in this job.
-              for item in files:
-                  dest = safe_destination(root, item['path'])
-                  src = stage / 'files' / item['path']
-                  dest.parent.mkdir(parents=True,exist_ok=True)
-                  dest.write_bytes(src.read_bytes())
-                  dest.chmod(item['mode'])
-              return report
-
-          def apply(root: Path, stage: Path) -> dict:
-              root=root.resolve();stage=stage.resolve()
-              report=json.loads((stage/'manifest.json').read_text(encoding='utf-8'))
-              if report.get('format')!='xora-repository-zip-import-v2':
-                  raise ImportErrorSafe('Unknown manifest format')
-              for item in report['files']:
-                  src=safe_destination(stage/'files',item['path'])
-                  if not src.is_file() or sha256(src.read_bytes())!=item['sha256']:
-                      raise ImportErrorSafe('Staged file tampered or missing: '+item['path'])
-                  safe_destination(root,item['path'])
-              for name in report['archives']:
-                  zip_path=safe_destination(root,name)
-                  if not zip_path.exists() or not zipfile.is_zipfile(zip_path):
-                      raise ImportErrorSafe('Tracked ZIP missing or corrupt before commit: '+name)
-              # Changes and ZIP deletions are committed as a single transaction by git.
-              for item in report['files']:
-                  dest=safe_destination(root,item['path']);src=stage/'files'/item['path']
-                  dest.parent.mkdir(parents=True,exist_ok=True)
-                  dest.write_bytes(src.read_bytes());dest.chmod(item['mode'])
-                  subprocess.run(['git','-C',str(root),'add','--',item['path']],check=True)
-              for name in report['archives']:
-                  subprocess.run(['git','-C',str(root),'rm','--',name],check=True)
-              return report
-
-          def main():
-              p=argparse.ArgumentParser()
-              p.add_argument('--root',default='.')
-              p.add_argument('--stage',default='.xora-import')
-              p.add_argument('--apply',action='store_true')
-              args=p.parse_args()
-              try:
-                  root=Path(args.root).resolve();stage=(root/args.stage).resolve()
-                  report=apply(root,stage) if args.apply else prepare(root,stage)
-                  print(json.dumps({k:report[k] for k in ('archives','file_count','nested_archives_expanded','duplicates_discarded')},indent=2))
-              except (ImportErrorSafe, OSError, ValueError, zipfile.BadZipFile, subprocess.CalledProcessError) as e:
-                  print(f'XORA ZIP IMPORT FAILED: {e}',file=sys.stderr)
-                  raise SystemExit(1)
-
-          if __name__=='__main__':
-              main()
-          PY_IMPORT
-          cat > tests/test_import_repo_zips.py <<'PY_TEST'
-          import io
-          import json
-          import subprocess
-          import tempfile
-          import unittest
-          import zipfile
+          source = lzma.decompress(base64.b64decode("""
+          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
+          """))
+          if hashlib.sha256(source).hexdigest() != "33b6c7a45da1b5817994e1d40a731e00bb3972a7dabafe6a2640f5b0e19af414":
+              raise SystemExit('Trusted importer checksum mismatch')
+          Path(os.environ['RUNNER_TEMP'], 'xora-importer.py').write_bytes(source)
+          PY_BOOTSTRAP
+      - name: Prepare source and record immutable manifest
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$RUNNER_TEMP/xora-importer.py" --root . --stage .xora-import
+          python - <<'PY'
+          import hashlib, json, os
           from pathlib import Path
-          import sys
-          sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-          from import_repo_zips import ArchiveReader, ImportErrorSafe, prepare, apply, safe_destination, git_tracked_zip_paths
-
-
-          def makezip(items):
-              b=io.BytesIO()
-              with zipfile.ZipFile(b,'w',zipfile.ZIP_DEFLATED) as z:
-                  for n,content in items:
-                      z.writestr(n,content)
-              return b.getvalue()
-
-          class ImporterTests(unittest.TestCase):
-              def setUp(self):
-                  self.tmp=tempfile.TemporaryDirectory()
-                  self.addCleanup(self.tmp.cleanup)
-                  self.root=Path(self.tmp.name)
-                  subprocess.run(['git','init','-q','-b','main',str(self.root)],check=True)
-                  subprocess.run(['git','-C',str(self.root),'config','user.email','fixture@example.invalid'],check=True)
-                  subprocess.run(['git','-C',str(self.root),'config','user.name','Fixture'],check=True)
-              def archive(self,entries,name='any (new) FILE.ZIP'):
-                  p=self.root/name;p.parent.mkdir(parents=True,exist_ok=True)
-                  p.write_bytes(makezip(entries))
-                  subprocess.run(['git','-C',str(self.root),'add','--',name],check=True)
-                  subprocess.run(['git','-C',str(self.root),'commit','-qm','fixture upload'],check=True)
-                  return p
-              def run_prepare(self):
-                  return prepare(self.root,self.root/'.xora-import')
-              def test_any_filename_spaces_uppercase(self):
-                  self.archive([('src/app/page.tsx',b'hi')])
-                  m=self.run_prepare()
-                  self.assertEq
+          data = Path('.xora-import/manifest.json').read_bytes()
+          manifest = json.loads(data)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              print('has_archives=' + str(bool(manifest['archives'])).lower(), file=out)
+              print('manifest_sha256=' + hashlib.sha256(data).hexdigest(), file=out)
+          PY
+      - name: Python tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Unit and source-boundary tests
+        run: |
+          set -euo pipefail
+          npm test
+          npm run verify:boundaries
+      - name: Install dependencies without production credentials
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --include=dev --no-audit --no-fund
+          else
+            echo '::warning::No committed lockfile; dependency resolution is not reproducible yet.'
+            npm install --include=dev --no-audit --no-fund
+          fi
+      - name: Syntax, production build and type verification
+        env:
+          XORA_ENVIRONMENT: production
+          XORA_AUTH_ENABLED: 'false'
+          XORA_SIGNUP_ENABLED: 'false'
+          XORA_PUBLIC_LAUNCH: 'false'
+          XORA_MOMO_PAYMENTS: 'false'
+          XORA_TEST_ENDPOINTS: 'false'
+        run: |
+          set -euo pipefail
+          npm run verify:syntax
+          npm run build
+          npm run typecheck
+  commit:
+    name: Commit validated source and remove only processed archives
+    needs: validate
+    if: >-
+      needs.validate.outputs.has_archives == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Bootstrap trusted importer (never execute uploaded code here)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY_BOOTSTRAP'
+          import base64, lzma, hashlib, os
+          from pathlib import Path
+          source = lzma.decompress(base64.b64decode("""
+          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
+          """))
+          if hashlib.sha256(source).hexdigest() != "33b6c7a45da1b5817994e1d40a731e00bb3972a7dabafe6a2640f5b0e19af414":
+              raise SystemExit('Trusted importer checksum mismatch')
+          Path(os.environ['RUNNER_TEMP'], 'xora-importer.py').write_bytes(source)
+          PY_BOOTSTRAP
+      - name: Verify identical extraction and commit atomically
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_MANIFEST: ${{ needs.validate.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_COMMIT" ]]
+          [[ "$(git rev-parse FETCH_HEAD)" == "$EXPECTED_COMMIT" ]]
+          python "$RUNNER_TEMP/xora-importer.py" --root . --stage .xora-import
+          [[ "$(sha256sum .xora-import/manifest.json | cut -d' ' -f1)" == "$EXPECTED_MANIFEST" ]]
+          python "$RUNNER_TEMP/xora-importer.py" --root . --stage .xora-import --apply
+          if git diff --cached --quiet; then
+            echo 'Nothing changed.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -c core.hooksPath=/dev/null commit -m 'chore: import validated XORA source and remove processed archives'
+          git push origin HEAD:refs/heads/main
+          
