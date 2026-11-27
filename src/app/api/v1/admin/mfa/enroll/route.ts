@@ -1,3 +1,4 @@
+import {sameOrigin} from '@/core/security';
 import type {NextRequest} from 'next/server';
 import {resolveAccountSession} from '@/lib/session';
 import {beginStaffMfaEnrollment,staffStatus} from '@/lib/staff-mfa-db';
@@ -5,6 +6,7 @@ import {enrolmentAllowed,toOtpAuthUri} from '@/core/staff-mfa';
 import {jsonError,jsonOk,requestId} from '@/lib/request';
 export const runtime='nodejs';
 export async function POST(req:NextRequest){const id=requestId();try{
+ if(!sameOrigin(req.headers.get('origin'),process.env.BETTER_AUTH_URL))return jsonError('FORBIDDEN',403,id);
  const member=await resolveAccountSession(req);if(!member)return jsonError('UNAUTHORIZED',401,id);
  const state=await staffStatus(member.accountId);
  if(!enrolmentAllowed({staffStatus:state,accountStatus:member.accountStatus,emailVerified:member.emailVerified,sessionAgeMs:Date.now()-member.signedInAt,alreadyConfirmed:false}))return jsonError('FORBIDDEN',403,id);

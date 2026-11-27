@@ -1,6 +1,6 @@
-# XORA | Production infrastructure foundation
+# XORA | Phase 3 private onboarding
 
-The application source lives at the repository root. This delivery updates infrastructure safeguards and the source import pipeline, not the product launch. Production hosting does not imply that public signup, payments or other member features are approved. All existing launch gates remain closed.
+The application source lives at the repository root. This delivery adds private account onboarding, profiles, independent eligibility and content review, photo transformation and privacy requests without opening the service to real members. Production hosting does not imply that public signup, payments or other member features are approved. All existing launch gates remain closed.
 
 ## Production targets
 
@@ -38,3 +38,7 @@ The health endpoint `/api/health/live` is intentionally shallow. `/api/health/re
 ## Production connectivity
 
 See [Production topology and release verification](docs/engineering/PRODUCTION_TOPOLOGY.md) for the authenticated Vercel-to-Render check and release gates.
+
+## Phase 3 release
+
+Read [Phase 3 implementation and production release record](docs/phase3/PHASE3_IMPLEMENTATION.md). Production schema migrations 0011 and 0012 are installed. Migration 0013 is deliberately withheld until the controlled activation checks pass. Existing GitHub workflow remains unchanged. No matching, payments or member contact endpoints are enabled.

@@ -841,3 +841,7 @@ sequenceDiagram
 7. Obtain the legal/payment/privacy go-ahead before replacing fake payment instructions with real ones.
 
 **Final contract:** XORA has one account, two connection intentions plus Both, one private and safe connection system, optional timed profile visibility, and six proposed manually approved renewable products. The API must make lawful consent, independently verified money, and accurate paid-time accounting non-negotiable.
+
+## Phase 3 implementation addendum (0.5.0)
+
+The actual implemented paths, bounded binary upload contract, native Better Auth routes, consent/version checks, private case review and intentionally closed discovery/payment/contact paths are recorded in [Phase 3 implementation](phase3/PHASE3_IMPLEMENTATION.md). This addendum does not claim the remaining proposed APIs or public launch are deployed.

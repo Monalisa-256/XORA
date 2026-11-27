@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import {normalizePhoto} from '../src/core/phase3-image.ts';
+const source=await sharp({create:{width:1500,height:1000,channels:3,background:'#6043a1'}}).jpeg().withMetadata({orientation:1}).toBuffer();
+const result=await normalizePhoto(source,'image/jpeg');
+const meta=await sharp(result.data).metadata();
+assert.equal(meta.format,'webp');assert.equal(meta.width,1200);assert.equal(meta.height,800);assert.equal(meta.exif,undefined);assert.equal(meta.icc,undefined);assert.equal(meta.xmp,undefined);assert.match(result.sha,/^[a-f0-9]{64}$/);assert.ok(result.data.length<=1048576);
+const png=await sharp({create:{width:200,height:200,channels:3,background:'#224466'}}).png().toBuffer();assert.equal((await sharp((await normalizePhoto(png,'image/png')).data).metadata()).format,'webp');
+await assert.rejects(normalizePhoto(source,'image/png'),/INVALID_PHOTO/);
+await assert.rejects(normalizePhoto(Buffer.from('<svg/>'),'image/svg+xml'),/UNSUPPORTED_PHOTO/);
+await assert.rejects(normalizePhoto(Buffer.from([255,216,255,0,1,2]),'image/jpeg'),/INVALID_PHOTO/);
+const tiny=await sharp({create:{width:16,height:16,channels:3,background:'#112233'}}).png().toBuffer();await assert.rejects(normalizePhoto(tiny,'image/png'),/INVALID_PHOTO/);
+await assert.rejects(normalizePhoto(Buffer.alloc(3*1024*1024+1),'image/png'),/INVALID_PHOTO/);
+console.log('7 actual Phase 3 image transformation and rejection checks passed');

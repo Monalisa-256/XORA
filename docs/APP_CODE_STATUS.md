@@ -11,3 +11,7 @@
 **Blocking gates:** real transactional email sending domain, Better Auth vendor/runtime session tests and staff MFA E2E, authenticated staging preview build, file scan/retention policy, worker release/alerting, full Phase 2 acceptance tests and Uganda privacy/legal reviews. Signup, member features and payments remain OFF.
 
 Full implementation details: `XORA_PHASE2_IMPLEMENTATION/PHASE2_AUTH_SECURITY_UPDATE.md`.
+
+## Phase 3 protected production increment (27 November 2026)
+
+See [Phase 3 implementation and verification](phase3/PHASE3_IMPLEMENTATION.md). The empty authentication and member schema was installed on the XORA production Neon branch; runtime write activation is not applied. Source awaits successful GitHub import/build and both production deployments. Live signup and real-user evidence remain closed pending the documented release gates.

@@ -1,6 +1,6 @@
 {
   "name": "xora-web",
-  "version": "0.4.0-phase2-auth-security",
+  "version": "0.5.0-phase3",
   "private": true,
   "type": "module",
   "description": "XORA web application, closed production infrastructure foundation",
@@ -15,7 +15,7 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "verify:boundaries": "node scripts/check-boundaries.mjs",
     "lint": "eslint src --max-warnings 0",
-    "verify:syntax": "node scripts/syntax-verify.mjs",
+    "verify:syntax": "node scripts/syntax-verify.mjs && node --experimental-strip-types scripts/verify-phase3-media.mjs",
     "verify:production": "node scripts/production-smoke.mjs"
   },
   "dependencies": {
@@ -27,7 +27,8 @@
     "zod": "^4.1.0",
     "server-only": "^0.0.1",
     "@aws-sdk/client-s3": "^3.900.0",
-    "@aws-sdk/s3-request-presigner": "^3.900.0"
+    "@aws-sdk/s3-request-presigner": "^3.900.0",
+    "sharp": "0.34.5"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
