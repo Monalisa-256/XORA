@@ -34,3 +34,7 @@ npm run typecheck
 No verified npm lockfile was supplied in the original repository. Generate and review one with a trusted network-enabled npm install; commit it before switching exclusively to `npm ci`. Do not confuse syntax checks with a full build or dependency audit.
 
 The health endpoint `/api/health/live` is intentionally shallow. `/api/health/ready` requires the existing server-side monitor token and checks the expected database and role. `npm run verify:production` requires that token in the environment (and authorized Vercel access if protection is active); it exits unsuccessfully if readiness cannot be verified. Do not share tokens or turn off deployment protection merely to obtain a green check.
+
+## Production connectivity
+
+See [Production topology and release verification](docs/engineering/PRODUCTION_TOPOLOGY.md) for the authenticated Vercel-to-Render check and release gates.

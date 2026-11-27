@@ -156,4 +156,45 @@ class ImporterTests(unittest.TestCase):
         apply(self.root,self.root/'.xora-import')
         self.assertFalse(p.exists());self.assertTrue(keep.exists())
 
+    def test_case_conflict_existing_repository(self):
+        p=self.root/'src/Page.ts';p.parent.mkdir();p.write_text('existing')
+        subprocess.run(['git','-C',str(self.root),'add','src'],check=True)
+        subprocess.run(['git','-C',str(self.root),'commit','-qm','existing'],check=True)
+        a=self.archive([('src/page.ts',b'new')])
+        with self.assertRaisesRegex(ImportErrorSafe,'Case-conflicting repository'):
+            self.run_prepare()
+        self.assertTrue(a.exists());self.assertFalse((self.root/'src/page.ts').exists())
+    def test_mixed_wrappers_rejected(self):
+        a=self.archive([('src/page.ts',b'a'),('XORA-main/src/other.ts',b'b')])
+        with self.assertRaisesRegex(ImportErrorSafe,'mixed repository wrapper'):
+            self.run_prepare()
+        self.assertTrue(a.exists())
+    def test_repeated_root_folder_rejected(self):
+        self.archive([('src/src/page.ts',b'a')])
+        with self.assertRaisesRegex(ImportErrorSafe,'Repeated top-level'):
+            self.run_prepare()
+    def test_same_commit_conflicts_fail(self):
+        self.archive([('src/page.ts',b'a')],name='a.zip')
+        (self.root/'b.zip').write_bytes(makezip([('src/page.ts',b'b')]))
+        (self.root/'a.zip').write_bytes(makezip([('src/page.ts',b'c')]))
+        subprocess.run(['git','-C',str(self.root),'add','a.zip','b.zip'],check=True)
+        subprocess.run(['git','-C',str(self.root),'commit','-qm','ambiguous'],check=True)
+        with self.assertRaisesRegex(ImportErrorSafe,'Ambiguous conflicting archives'):
+            self.run_prepare()
+    def test_empty_archive_retained(self):
+        a=self.archive([('node_modules/junk.js',b'x')])
+        with self.assertRaisesRegex(ImportErrorSafe,'No importable source'):
+            self.run_prepare()
+        self.assertTrue(a.exists())
+    def test_file_directory_conflict_rejected(self):
+        self.archive([('src/new.ts',b'a'),('src/new.ts/extra.ts',b'b')])
+        with self.assertRaisesRegex(ImportErrorSafe,'File/directory conflict'):
+            self.run_prepare()
+    def test_unrelated_index_change_blocks_import(self):
+        self.archive([('src/new.ts',b'a')]);self.run_prepare()
+        (self.root/'unexpected.txt').write_text('extra')
+        subprocess.run(['git','-C',str(self.root),'add','unexpected.txt'],check=True)
+        with self.assertRaisesRegex(ImportErrorSafe,'Unexpected staged changes'):
+            apply(self.root,self.root/'.xora-import')
+
 if __name__=='__main__':unittest.main()

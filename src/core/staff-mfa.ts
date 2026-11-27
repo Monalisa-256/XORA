@@ -48,9 +48,17 @@ export function encryptTotpSecret(secret:string,keyB64:string):string{
  const data=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);
  return ['v1',iv.toString('base64url'),cipher.getAuthTag().toString('base64url'),data.toString('base64url')].join('.');
 }
+function decodeCanonicalBase64Url(encoded:string):Buffer{
+ // Node's Base64 decoder accepts alternate spellings with ignored trailing bits.
+ // Reject them before authenticating the exact ciphertext bytes.
+ if(!/^[A-Za-z0-9_-]+$/.test(encoded))throw Error('INVALID_MFA_CIPHERTEXT');
+ const decoded=Buffer.from(encoded,'base64url');
+ if(decoded.toString('base64url')!==encoded)throw Error('INVALID_MFA_CIPHERTEXT');
+ return decoded;
+}
 export function decryptTotpSecret(ciphertext:string,keyB64:string):string{
  const parts=ciphertext.split('.');if(parts.length!==4||parts[0]!=='v1')throw Error('INVALID_MFA_CIPHERTEXT');
- const iv=Buffer.from(parts[1],'base64url'),tag=Buffer.from(parts[2],'base64url'),data=Buffer.from(parts[3],'base64url');
+ const iv=decodeCanonicalBase64Url(parts[1]),tag=decodeCanonicalBase64Url(parts[2]),data=decodeCanonicalBase64Url(parts[3]);
  if(iv.length!==12||tag.length!==16||data.length===0)throw Error('INVALID_MFA_CIPHERTEXT');
  const decipher=createDecipheriv('aes-256-gcm',keyFromEnv(keyB64),iv);decipher.setAuthTag(tag);
  const plaintext=Buffer.concat([decipher.update(data),decipher.final()]).toString('utf8');fromBase32(plaintext);return plaintext;

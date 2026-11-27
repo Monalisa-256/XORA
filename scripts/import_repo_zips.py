@@ -134,6 +134,12 @@ class ArchiveReader:
         else:
             result[path] = item
 
+def tracked_paths(root: Path) -> set[str]:
+    return {os.fsdecode(n) for n in subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z']).split(b'\0') if n}
+
+def last_archive_commit(root: Path, relative: str) -> str:
+    return subprocess.check_output(['git', '-C', str(root), 'log', '-1', '--format=%H', '--', relative], text=True).strip()
+
 def git_tracked_zip_paths(root: Path) -> list[Path]:
     raw = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z'])
     paths = []
@@ -148,8 +154,7 @@ def git_tracked_zip_paths(root: Path) -> list[Path]:
             paths.append(source)
     def git_order(p: Path):
         relative = p.relative_to(root).as_posix()
-        result = subprocess.run(['git', '-C', str(root), 'log', '-1', '--format=%H', '--', relative], capture_output=True, text=True, check=True)
-        commit = result.stdout.strip()
+        commit = last_archive_commit(root, relative)
         depth = subprocess.check_output(['git', '-C', str(root), 'rev-list', '--count', commit], text=True).strip() if commit else '0'
         return (int(depth), relative)
     return sorted(paths, key=git_order)
@@ -179,9 +184,13 @@ def prepare(root: Path, stage: Path, *, archive_paths=None) -> dict:
     canonical: dict[str, str] = {}
     overrides, repeated = [], 0
     relocated_notes = []
+    origins = {}
     for archive in archives:
         name = archive.relative_to(root).as_posix()
         items = collector.read(archive.read_bytes(), name)
+        if not items:
+            raise ImportErrorSafe(f'No importable source files in archive: {name}')
+        origins[name] = last_archive_commit(root, name)
         # A change-only ZIP may carry its own README as packaging instructions.
         # Preserve the app's root README and retain that note under docs/.
         if 'package.json' not in items and 'README.md' in items and (root / 'README.md').is_file():
@@ -200,6 +209,9 @@ def prepare(root: Path, stage: Path, *, archive_paths=None) -> dict:
                 if prev[0] == data:
                     repeated += 1
                 else:
+                    old_commit, new_commit = origins[prev[2]], origins[name]
+                    if old_commit == new_commit or (old_commit and new_commit and subprocess.run(['git','-C',str(root),'merge-base','--is-ancestor',old_commit,new_commit],capture_output=True).returncode != 0):
+                        raise ImportErrorSafe(f'Ambiguous conflicting archives: {prev[2]} and {name}: {path}; upload newer correction in a separate commit')
                     overrides.append({'path':path, 'older_archive':prev[2], 'newer_archive':name})
             chosen[path] = (data, mode, name)
     # Do not replace the workflow currently running with an old workflow packed in a ZIP.
@@ -220,6 +232,29 @@ def prepare(root: Path, stage: Path, *, archive_paths=None) -> dict:
             fingerprints[digest] = path
     if same_content:
         raise ImportErrorSafe('Repeated identical file contents at distinct paths; review before deleting required paths: ' + str(same_content[:8]))
+    # Compare every path component against the tracked tree and all incoming files.
+    # This catches case-only aliases, file/directory conflicts and accidental wrappers
+    # before any source is copied. Legitimate internal directory names are preserved.
+    tracked = tracked_paths(root)
+    known = {}
+    for path in sorted(tracked | set(chosen)):
+        parts = path.split('/')
+        for i in range(1, len(parts)+1):
+            prefix = '/'.join(parts[:i])
+            folded = prefix.casefold()
+            if folded in known and known[folded] != prefix:
+                raise ImportErrorSafe(f'Case-conflicting repository paths: {known[folded]} vs {prefix}')
+            known[folded] = prefix
+    all_paths = tracked | set(chosen)
+    directory_paths = {'/'.join(path.split('/')[:i]) for path in all_paths for i in range(1,len(path.split('/')))}
+    for path in chosen:
+        parts = path.split('/')
+        if any('/'.join(parts[:i]) in all_paths for i in range(1,len(parts))) or path in directory_paths:
+            raise ImportErrorSafe(f'File/directory conflict in repository: {path}')
+        if parts[0] not in REPO_DIRS and len(parts)>1 and any(x in REPO_DIRS for x in parts[1:]):
+            raise ImportErrorSafe(f'Ambiguous mixed repository wrapper: {path}; use one common outer folder')
+        if len(parts)>1 and parts[0] in REPO_DIRS and parts[0] == parts[1]:
+            raise ImportErrorSafe(f'Repeated top-level repository folder: {path}')
     # Check all destinations before touching the worktree.
     for path in chosen:
         safe_destination(root, path)
@@ -231,7 +266,6 @@ def prepare(root: Path, stage: Path, *, archive_paths=None) -> dict:
         dest.write_bytes(data)
         dest.chmod(0o755 if mode & 0o111 else 0o644)
         files.append({'path':path, 'sha256':sha256(data), 'size':len(data), 'source':source, 'mode':0o755 if mode & 0o111 else 0o644})
-    tracked = set(os.fsdecode(n) for n in subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z']).split(b'\0') if n)
     cleanup = sorted(LEGACY_GENERATED & tracked) if archives else []
     report = {'format':'xora-repository-zip-import-v2','archives':[p.relative_to(root).as_posix() for p in archives],
               'archive_sha256':{p.relative_to(root).as_posix():sha256(p.read_bytes()) for p in archives}, 'legacy_generated_cleanup':cleanup,
@@ -277,6 +311,18 @@ def apply(root: Path, stage: Path) -> dict:
         subprocess.run(['git','-C',str(root),'add','--',item['path']],check=True)
     for name in report['archives'] + cleanup:
         subprocess.run(['git','-C',str(root),'rm','--',name],check=True)
+    # Verify the exact staged result, not just the temporary worktree.
+    index = tracked_paths(root)
+    for item in report['files']:
+        path = item['path']
+        if path not in index or sha256(subprocess.check_output(['git','-C',str(root),'show',':'+path])) != item['sha256']:
+            raise ImportErrorSafe(f'Index content differs from validated bytes: {path}')
+    if set(report['archives'] + cleanup) & index:
+        raise ImportErrorSafe('Processed archive or obsolete artifact remains in Git index')
+    changed = {os.fsdecode(n) for n in subprocess.check_output(['git','-C',str(root),'diff','--cached','--name-only','-z','--no-renames']).split(b'\0') if n}
+    allowed = {item['path'] for item in report['files']} | set(report['archives'] + cleanup)
+    if not changed <= allowed:
+        raise ImportErrorSafe('Unexpected staged changes outside validated manifest')
     return report
 
 def main():
