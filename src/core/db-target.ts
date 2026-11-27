@@ -7,5 +7,5 @@ export function validateDatabaseTarget(urlString:string, expectedDatabase:string
   if (expectedProjectId!=='sweet-meadow-04731447') throw new Error('WRONG_XORA_PROJECT_ID');
   if (url.hostname!==expectedHost) throw new Error('WRONG_XORA_BRANCH_HOST');
   if (decodeURIComponent(url.username)!==expectedUser) throw new Error('UNSAFE_DATABASE_LOGIN_ROLE');
-  if (url.searchParams.get('sslmode')==='disable') throw new Error('DATABASE_TLS_REQUIRED');
+  if (!['require','verify-ca','verify-full'].includes(url.searchParams.get('sslmode') ?? '')) throw new Error('DATABASE_TLS_REQUIRED');
 }

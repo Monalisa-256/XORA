@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {assertProductionTarget,productionTarget} from '../src/core/production-target.ts';
+import {validateDatabaseTarget} from '../src/core/db-target.ts';
+const good={NODE_ENV:'production',XORA_ENVIRONMENT:'production',XORA_DATABASE_NEON_PROJECT_ID:productionTarget.project,XORA_DATABASE_NEON_BRANCH_ID:productionTarget.branch,XORA_DATABASE_NAME:productionTarget.database,XORA_DATABASE_ALLOWED_USER:productionTarget.user,XORA_DATABASE_ALLOWED_HOST:productionTarget.hosts[0],XORA_TEST_ENDPOINTS:'false'};
+test('production uses the verified XORA identity',()=>assert.doesNotThrow(()=>assertProductionTarget(good)));
+for(const [key,value] of Object.entries({XORA_DATABASE_NEON_BRANCH_ID:'br-proud-base-bgx1lcns',XORA_DATABASE_NEON_PROJECT_ID:'other',XORA_DATABASE_ALLOWED_HOST:'other.neon.tech',XORA_DATABASE_ALLOWED_USER:'xora_owner',XORA_DATABASE_NAME:'other'}))test('production rejects wrong '+key,()=>assert.throws(()=>assertProductionTarget({...good,[key]:value}),/PRODUCTION_DATABASE_TARGET_MISMATCH/));
+test('production rejects staging or preview runtime',()=>{assert.throws(()=>assertProductionTarget({...good,XORA_ENVIRONMENT:'staging'}),/PRODUCTION_ENVIRONMENT_REQUIRED/);assert.throws(()=>assertProductionTarget({...good,VERCEL_ENV:'preview'}),/PRODUCTION_ENVIRONMENT_REQUIRED/);});
+test('production rejects test endpoints',()=>assert.throws(()=>assertProductionTarget({...good,XORA_TEST_ENDPOINTS:'true'}),/PRODUCTION_TEST_ENDPOINTS_FORBIDDEN/));
+test('local development without production settings is permitted',()=>assert.doesNotThrow(()=>assertProductionTarget({NODE_ENV:'development',XORA_ENVIRONMENT:'development'})));
+for(const mode of ['', '?sslmode=prefer','?sslmode=allow','?sslmode=disable'])test('reject weak or absent ssl mode '+mode,()=>assert.throws(()=>validateDatabaseTarget(`postgresql://${productionTarget.user}:fixture@${productionTarget.hosts[0]}/xora${mode}`,productionTarget.database,productionTarget.project,productionTarget.hosts[0],productionTarget.user),/DATABASE_TLS_REQUIRED/));

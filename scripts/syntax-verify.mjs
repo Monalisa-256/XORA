@@ -1,4 +1,4 @@
-import ts from '/opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/typescript.js';
+import ts from 'typescript';
 import fs from 'node:fs'; import path from 'node:path';
 const files=[]; const root=path.resolve('src');
 function rec(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=path.join(dir,e.name);if(e.isDirectory())rec(f);else if(/\.(ts|tsx)$/.test(f))files.push(f)}}

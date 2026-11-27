@@ -1,43 +1,36 @@
-# XORA — Web application and validated repository
+# XORA | Production infrastructure foundation
 
-**Single repository root**: this archive contains the XORA Next.js app at the root (not inside `XORA_APP/`). No nested ZIPs, repeated files, dependency output, generated logs or secrets are included.
+The application source lives at the repository root. This delivery updates infrastructure safeguards and the source import pipeline, not the product launch. Production hosting does not imply that public signup, payments or other member features are approved. All existing launch gates remain closed.
 
-> Status: closed staging engineering build, not a live marketplace. Public signup, payments, user matching and member onboarding are disabled pending compliance, age-verification, staff security and provider approval. Nothing here should be interpreted as payment-provider authorization.
+## Production targets
 
-## Layout
+| Component | Target |
+| --- | --- |
+| GitHub | `Monalisa-256/XORA`, `main` |
+| Render | `xora-production`, Frankfurt, service `srv-dc1fh74s728c73ca7sng` |
+| Vercel | `xora-production`, project `prj_CHJUd01GsHX6Nnq5B5mkPcz3ucL2` |
+| Neon | `xora-platform`, project `sweet-meadow-04731447`, protected branch `main` (`br-young-hill-bgijo9jk`) |
 
-- `src/` — Next.js web routes, core policies, services
-- `migrations/` — XORA-only PostgreSQL migrations (never auto-run by archive workflow)
-- `scripts/zip_guard.py` — safely discovers, unpacks, normalizes and updates any named ZIP
-- `scripts/verify_repo.py` — verifies ZIP contents, manifests, checksums and project structure
-- `scripts/check-boundaries.mjs` — application security boundary check
-- `tests/` — Python extractor tests and Node.js application security tests
-- `.github/workflows/zip-extract-validate-update.yml` — repository ZIP validation CI
-- `docs/` — PRD, architecture, API, data model, tech stack, phases, implementation records
-- `design/phase1/` — UI visual references and static interactive prototype
+Read [the production runbook](docs/engineering/PRODUCTION_RUNBOOK.md) before applying changes. Earlier design and engineering documents are historical records; their staging instructions do not supersede the production runbook.
 
-## Validate without app dependencies
+## Repository import
 
-```bash
-python3 -m unittest discover -s tests -p 'test_zip_guard.py' -v
-node --experimental-strip-types --test tests/*.test.mjs
-node scripts/check-boundaries.mjs
-python3 scripts/zip_guard.py --repo . --source-root . --strict-repo-sync --output-dir dist/normalized --report-dir dist/reports --extract-dir dist/extracted
-python3 scripts/verify_repo.py --archive-dir dist/normalized --report dist/reports/verification.json --require-root-layout --no-duplicate-content
+Install the separately supplied `zip-extract-validate-update.yml` at `.github/workflows/zip-extract-validate-update.yml`. Upload the new source ZIP at the root of `main`. Prefer a single commit containing both. The workflow detects ZIPs irrespective of filename, validates imported source and builds without production credentials, then commits the validated source and removes processed archives in a separate write job. The source ZIP deliberately omits the workflow, which is supplied independently. For a standalone checkout, copy the workflow into the path above.
+
+The import is an overlay, not an unrestricted directory mirror. Existing source outside the archive is preserved unless explicitly removed by the narrow generated-artifact cleanup. Do not upload arbitrary unreviewed source or secrets. Never run migrations as an archive-import side effect.
+
+## Local validation
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+npm test
+npm run verify:boundaries
+npm install --include=dev
+npm run verify:syntax
+npm run build
+npm run typecheck
 ```
 
-When `npm` dependencies are installed in an appropriately isolated environment, run `npm test`, `npm run verify:boundaries`, `npm run typecheck`, `npm run build` before deployment. This package does **not** contain a verified npm lockfile; establish one using a trusted install/review process before using `npm ci` in CI.
+No verified npm lockfile was supplied in the original repository. Generate and review one with a trusted network-enabled npm install; commit it before switching exclusively to `npm ci`. Do not confuse syntax checks with a full build or dependency audit.
 
-## Any ZIP filename
-
-The workflow auto-discovers `.zip` and `.ZIP` of arbitrary names including spaces. Or invoke:
-
-```bash
-python3 scripts/zip_guard.py --repo . --archive 'some-folder/anything (v3).ZIP' --source-root . --strict-repo-sync
-```
-
-The ZIP guard verifies input safety before synchronizing files from the checkout. For same-project ZIPs, prefer the checked-out repository source as authoritative so stale archive contents do not replace current files. It never runs code contained in untrusted ZIPs.
-
-## Privacy and isolation
-
-Do not commit `.env.local` or database credentials. This repo references only XORA Neon resources; do not direct its migrations at other projects. See `docs/phase2-implementation/` for the current limitations and evidence.
+The health endpoint `/api/health/live` is intentionally shallow. `/api/health/ready` requires the existing server-side monitor token and checks the expected database and role. `npm run verify:production` requires that token in the environment (and authorized Vercel access if protection is active); it exits unsuccessfully if readiness cannot be verified. Do not share tokens or turn off deployment protection merely to obtain a green check.
